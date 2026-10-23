@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hopscope · GraphRAG vs vector RAG on multi-hop QA</title>
+<meta name="description" content="Interactive results explorer: when does knowledge-graph retrieval beat vector RAG on HotpotQA? Precomputed, reproducible, no API keys.">
+<style>
+:root{--bg:#0a0b11;--s:#12141d;--s2:#191c28;--b:rgba(255,255,255,.09);--t:#eceef5;--t2:#b4b9c9;--m:#8a90a3;--a:#a78bfa;--a2:#67e8f9;--ok:#34d399;--bad:#f87171;--grad:linear-gradient(120deg,#8b5cf6,#3b82f6 50%,#22d3ee)}
+*{box-sizing:border-box}body{margin:0;font:15.5px/1.6 Inter,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--t)}
+a{color:var(--a2)}.wrap{width:min(1120px,100% - 2rem);margin:auto;padding:2.5rem 0 4rem}
+h1{font-size:clamp(1.8rem,4vw,2.6rem);margin:.2rem 0 .6rem;letter-spacing:-.02em}h2{margin:2.4rem 0 .8rem;font-size:1.35rem}
+.grad{background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
+.kicker{font:600 .78rem/1 ui-monospace,Menlo,monospace;letter-spacing:.12em;text-transform:uppercase;color:var(--a)}
+.sub{color:var(--t2);max-width:52rem}.card{background:var(--s);border:1px solid var(--b);border-radius:16px;padding:1.2rem;overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:.9rem}th,td{padding:.45rem .6rem;text-align:right;border-bottom:1px solid var(--b);white-space:nowrap}
+th:first-child,td:first-child{text-align:left}th{color:var(--m);font:600 .74rem ui-monospace,Menlo,monospace;text-transform:uppercase;letter-spacing:.05em}
+td.best{color:var(--ok);font-weight:700}code{font-family:ui-monospace,Menlo,monospace;font-size:.85em}
+.bars{display:grid;gap:.5rem}.bar{display:grid;grid-template-columns:150px 1fr 56px;gap:.6rem;align-items:center;font-size:.86rem}
+.track{height:12px;background:var(--s2);border-radius:99px;overflow:hidden}.fill{height:100%;background:var(--grad);border-radius:99px}
+.controls{display:flex;flex-wrap:wrap;gap:.6rem;margin:.6rem 0 1rem}select,input,button{background:var(--s2);color:var(--t);border:1px solid var(--b);border-radius:10px;padding:.5rem .7rem;font:inherit}
+button{cursor:pointer}button:hover{border-color:var(--a)}.q{font-size:1.05rem;font-weight:600}.meta{color:var(--m);font-size:.85rem}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:.8rem;margin-top:.8rem}
+.m{background:var(--s2);border:1px solid var(--b);border-radius:12px;padding:.8rem}.m h4{margin:0 0 .4rem;font:600 .8rem ui-monospace,Menlo,monospace;color:var(--a2)}
+.m ol{margin:0;padding-left:1.1rem;font-size:.86rem}.gold{color:var(--ok);font-weight:600}.pred{margin-top:.4rem;font-size:.84rem;color:var(--t2)}
+.tag{display:inline-block;padding:.05rem .45rem;border-radius:99px;font-size:.72rem;border:1px solid var(--b);margin-left:.3rem}
+.tag.ok{color:var(--ok);border-color:rgba(52,211,153,.4)}.tag.bad{color:var(--bad);border-color:rgba(248,113,113,.4)}
+footer{margin-top:3rem;color:var(--m);font-size:.85rem}
+@media(max-width:600px){.bar{grid-template-columns:110px 1fr 48px}}
+</style>
+</head>
+<body><div class="wrap">
+<p class="kicker">hopscope · results explorer</p>
+<h1>When does <span class="grad">graph retrieval</span> beat vector RAG?</h1>
+<p class="sub" id="setup">Loading…</p>
+<p class="sub">Source &amp; reproduction: <a href="https://github.com/sushmit-gujar/hopscope">github.com/sushmit-gujar/hopscope</a>. Every number on this page was produced by <code>hopscope run</code>; nothing is hand-entered.</p>
+
+<h2>Overall (test slice)</h2>
+<div class="card"><table id="summary"></table></div>
+<p class="meta">R@k = share of gold supporting passages in top-k · Full@k = <b>both</b> gold passages in top-k (complete multi-hop chain) · EM/F1 on span-answer questions (yes/no excluded) · Attrib. = answer extracted from a gold passage · Ungrounded = answer taken from a non-gold passage · latency = retrieval only, CPU.</p>
+
+<h2>Complete evidence chains (Full@5) by question type</h2>
+<div class="card"><div id="types"></div></div>
+
+<h2>Browse questions</h2>
+<div class="controls">
+  <select id="filter"><option value="all">All questions</option><option value="bridge">Bridge</option><option value="comparison">Comparison</option><option value="graphwin">Graph found full chain, dense did not</option><option value="densewin">Dense found full chain, graph did not</option></select>
+  <input id="search" placeholder="Search question text…" size="28">
+  <button id="prev">← Prev</button><button id="next">Next →</button><span class="meta" id="pos"></span>
+</div>
+<div class="card" id="qview"></div>
+<footer>Dataset: HotpotQA distractor validation (Yang et al., 2018, CC BY-SA 4.0). Embeddings: BAAI/bge-small-en-v1.5 (ONNX, local). Reader: DistilBERT-SQuAD (quantized ONNX, local). Built by Sushmit Gujar.</footer>
+</div>
+<script>
+const COLS=[["recall@2","R@2"],["recall@5","R@5"],["full_support@5","Full@5"],["full_support@10","Full@10"],["mrr","MRR"],["em","EM"],["f1","F1"],["attribution","Attrib."],["ungrounded_answer","Ungrounded",1],["latency_p50_ms","p50 ms",1],["latency_p95_ms","p95 ms",1]];
+let D,Q=[],view=[],i=0;
+fetch("data.json").then(r=>r.json()).then(d=>{D=d;Q=d.questions;render();});
+function render(){
+  const c=D.config;document.getElementById("setup").textContent=`${c.n_questions} HotpotQA questions (distractor, validation) pooled into one ${D.index_stats.passages.toLocaleString()}-passage corpus; ${c.methods.length} retrievers, top-${c.k_read} passages to a local extractive reader. Graph: ${D.index_stats.graph_entities.toLocaleString()} entities, ${D.index_stats.graph_edges.toLocaleString()} passage–entity edges, built with no LLM.`;
+  const ms=Object.keys(D.summary).filter(m=>m!=="oracle");
+  let h="<tr><th>Method</th>"+COLS.map(c=>`<th>${c[1]}</th>`).join("")+"</tr>";
+  const best={};COLS.forEach(([k,,low])=>{const v=ms.map(m=>D.summary[m][k]).filter(x=>x!=null);best[k]=low?Math.min(...v):Math.max(...v)});
+  for(const m of Object.keys(D.summary)){h+=`<tr><td><code>${m}</code></td>`+COLS.map(([k])=>{const v=D.summary[m][k];if(v==null)return"<td>–</td>";const isB=m!=="oracle"&&v===best[k];return`<td class="${isB?"best":""}">${k.endsWith("_ms")?v.toFixed(1):v.toFixed(3)}</td>`}).join("")+"</tr>"}
+  document.getElementById("summary").innerHTML=h;
+  let t="";for(const ty of Object.keys(D.by_type)){t+=`<p class="meta" style="margin:.8rem 0 .3rem">${ty} (n=${D.by_type[ty][ms[0]].n})</p><div class="bars">`;for(const m of ms){const v=D.by_type[ty][m]["full_support@5"];t+=`<div class="bar"><code>${m}</code><div class="track"><div class="fill" style="width:${(v*100).toFixed(1)}%"></div></div><span>${(v*100).toFixed(1)}%</span></div>`}t+="</div>"}
+  document.getElementById("types").innerHTML=t;applyFilter();
+}
+function full(q,m){return q.m[m]&&q.m[m].f5===1}
+function applyFilter(){const f=document.getElementById("filter").value,s=document.getElementById("search").value.toLowerCase();
+  view=Q.filter(q=>(f==="all"||q.type===f||(f==="graphwin"&&(full(q,"graph_expand")||full(q,"graph_ppr+dense"))&&!full(q,"dense"))||(f==="densewin"&&full(q,"dense")&&!full(q,"graph_expand")&&!full(q,"graph_ppr+dense")))&&(!s||q.q.toLowerCase().includes(s)));i=0;show()}
+function show(){const el=document.getElementById("qview");document.getElementById("pos").textContent=view.length?`${i+1} / ${view.length}`:"0 results";
+  if(!view.length){el.innerHTML="<p class='meta'>No questions match.</p>";return}
+  const q=view[i];let h=`<p class="q">${esc(q.q)}</p><p class="meta">Gold answer: <b>${esc(q.a)}</b> · type: ${q.type} · gold passages: ${q.gold.map(esc).join(" + ")}</p><div class="grid">`;
+  for(const [m,r] of Object.entries(q.m)){h+=`<div class="m"><h4>${m}${r.f5===1?'<span class="tag ok">full chain</span>':'<span class="tag bad">incomplete</span>'}</h4><ol>`+r.top.map(t=>`<li class="${q.gold.includes(t)?"gold":""}">${esc(t)}</li>`).join("")+"</ol>";
+    if(r.pred!=null)h+=`<p class="pred">Reader: “${esc(r.pred)}” ${r.em===1?'<span class="tag ok">EM</span>':'<span class="tag bad">miss</span>'}</p>`;h+="</div>"}
+  el.innerHTML=h+"</div>"}
+function esc(s){return String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]))}
+document.getElementById("filter").onchange=applyFilter;document.getElementById("search").oninput=applyFilter;
+document.getElementById("prev").onclick=()=>{if(view.length){i=(i-1+view.length)%view.length;show()}};
+document.getElementById("next").onclick=()=>{if(view.length){i=(i+1)%view.length;show()}};
+</script>
+</body></html>
